@@ -1,4 +1,5 @@
 #!/usr/bin/false
+# shellcheck shell=bash
 # General functions and environment variables.
 
 # === ENVIRONMENT VARIABLES ===
@@ -11,6 +12,7 @@ else
 fi
 
 # Set this to true if your script is being run as an SBATCH script
+# shellcheck disable=SC2034
 IS_SBATCH_SCRIPT=false
 
 # level of verbosity (set this after sourcing this utility script)
@@ -91,27 +93,24 @@ function timestamp() { echo "[$(date +'%Y-%m-%d-@-%H:%M:%S%z')]" ; }
 # Report an error.
 function err() { reset_ifs;
   local oldenv="$-"
+  local j
+  local line
   set +u
-  # in a slurm job, use 2 rather than 1
-  i=0
-  if [[ "$IS_SBATCH_SCRIPT" ]]; then
-    i=1
-  fi
 
-  call_stack=( "${FUNCNAME[@]}" )
-  source_stack=( "${BASH_SOURCE[@]}" )
-  lineno_stack=( "${BASH_LINENO[@]}" )
-  printf "$(r $(timestamp)) " >&2
+  local -a call_stack=( "${FUNCNAME[@]}" )
+  local -a source_stack=( "${BASH_SOURCE[@]}" )
+  local -a lineno_stack=( "${BASH_LINENO[@]}" )
+  printf "%s " "$(r "$(timestamp)")" >&2
   if (( VERBOSITY > 2)); then
     printf "\n" >&2
-    for ((j=(${#call_stack});j>0;j--)); do
-      if [[ -n ${call_stack[$j]} ]]; then
-        line="$(bd ${source_stack[$j]##*/}):$(b ${call_stack[$j]}):$(y ${lineno_stack[$j]})"
+    for ((j=${#call_stack[@]}-1;j>0;j--)); do
+      if [[ -n "${call_stack[$j]:-}" ]]; then
+        line="$(bd "${source_stack[$j]##*/}"):$(b "${call_stack[$j]}"):$(y "${lineno_stack[$j]}")"
         echo "  $(r ⮡) $line" >&2
       fi
     done
   fi
-  printf "$(r $(bd "Error:")) $*\n" >&2
+  printf "%s %s\n" "$(r "$(bd "Error:")")" "$*" >&2
   set $oldenv
 
 }
@@ -163,8 +162,11 @@ gnisu() {
 
   local size="${#_using_stack[@]}"
   if (( size < 1 )); then return; fi
-  local kvpair=${_using_stack[${#_using_stack[@]}-1]}
-  unset _using_stack[${#_using_stack[@]}-1]
+  local idx=$(( size - 1 ))
+  local kvpair=${_using_stack[$idx]}
+  local varname
+  local value
+  unset "_using_stack[$idx]"
   varname="${kvpair%$'\001'*}"
   value="${kvpair#*$'\001'}"
   eval "$varname=$value"
@@ -198,20 +200,23 @@ squeeze() {
 squeezepath() {
   # Fit the path within COLUMNS.
   local path="$1"
-  local base="$(basename "$path")"
+  local base
+  local parent
   local old_env="$-"
   
   set +u
+  base="$(basename "$path")"
+  parent="$(dirname "$path")"
   local COLUMNS="$COLUMNS"
   : ${COLUMNS:=80} # if not defined
   if (( "${#base}" > COLUMNS )); then
     # Truncate both the parent and the basename.
-    echo "$(squeeze 7 $(dirname "$path"))"/"$(squeeze $(( COLUMNS - 8 )) "$base")"
+    echo "$(squeeze 7 "$parent")"/"$(squeeze $(( COLUMNS - 8 )) "$base")"
     return
   fi 
 
   # Otherwise, keep full basename and truncate path
-  echo "$(squeeze $((COLUMNS-1-${#base})) $(dirname "$path"))"/"$base"
+  echo "$(squeeze $((COLUMNS-1-${#base})) "$parent")"/"$base"
   # Reset environment
   set $old_env
 
@@ -219,7 +224,8 @@ squeezepath() {
 
 length() {
   # Length of a string minus non-printing characters
-  local str=$( sed $'s,\x1B\[[0-9;]*[a-zA-Z],,g;s,\017,,g' <<< "$*" )
+  local str
+  str=$( sed $'s,\x1B\[[0-9;]*[a-zA-Z],,g;s,\017,,g' <<< "$*" )
   echo "${#str}"
 }
 
@@ -228,10 +234,12 @@ box() {
   local old_env="$-"
   set +u 
   local COLUMNS=$COLUMNS
+  local contents
+  local length
   : ${COLUMNS:=80}
   contents="$(fold -s -w "$(( COLUMNS - 4 ))" <<< "$*")"
   length=$(awk -F '' 'NF>a{a=NF}END{print a}' <<< "$contents") # length of longest line
-  awk -v l=$length 'BEGIN{ printf "┌";for(;i++<l+2;){printf "─"}print "┐"}{printf "│ %*-s │\n", l, $0 }END{  printf "└";for(i=0;i++<l+2;){printf "─"}print "┘" }' <<< "$contents"
+  awk -v l="$length" 'BEGIN{ printf "┌";for(;i++<l+2;){printf "─"}print "┐"}{printf "│ %*-s │\n", l, $0 }END{  printf "└";for(i=0;i++<l+2;){printf "─"}print "┘" }' <<< "$contents"
 
   set $old_env
 }
@@ -260,7 +268,8 @@ docstring() {
   # Print the comment header of the file
   # without the leading #'s.
   local our_file="$1"
-  local heading="$(basename "$our_file")"
+  local heading
+  heading="$(basename "$our_file")"
   using COLUMNS 80
     box "$heading" >&2
   gnisu
@@ -299,7 +308,8 @@ parse_args() {
     _fname=$0
   fi
 
-  local arg_strings=( $1 )
+  local -a arg_strings
+  read -r -a arg_strings <<< "$1"
   shift
   local real_args=( "${@}" )
   declare -a args=()
@@ -331,11 +341,11 @@ parse_args() {
       key="${key//-/_}" # Replace all - with _
       # We discard the suffix
 
-      # Don't change it if key was defined as an environment variable
-      if [[ -z "${!key}" ]]; then
-        options["$key"]="EMPTY"
-      else
+      # Preserve an existing environment value for this option, if any.
+      if [[ -v $key ]]; then
         options["$key"]="${!key}"
+      else
+        options["$key"]="EMPTY"
       fi
 
     # Or a flag
@@ -347,7 +357,7 @@ parse_args() {
 
     # Otherwise, assume it's a positional argument
     else
-      args[(( argc++ ))]="$arg"
+      args[argc++]="$arg"
     fi
 
     # Remove this one from the arg list
@@ -357,7 +367,9 @@ parse_args() {
 
   # Now move on to processing args
   set -- "${real_args[@]}"
-  rargc=0
+  local rargc=0
+  local name
+  local option_key
   while (( $# > 0 )); do
     arg="$1"
 
@@ -372,10 +384,10 @@ parse_args() {
       --*=*)
         arg="${arg#--}"
         key="${arg%%=*}"
-        value="${arg##*=}"
+        value="${arg#*=}"
         # Replace - with _
         key="${key//-/_}"
-        if [[ -z "${options["$key"]}" ]]; then
+        if [[ ! -v "options[$key]" ]]; then
           err "Unrecognized option: $key"
           return 1
         fi
@@ -386,7 +398,7 @@ parse_args() {
       # Flag
       --*) arg="${arg#--}"
            arg="${arg//-/_}"
-           if [[ -z "${options["$arg"]}" ]]; then
+           if [[ ! -v "options[$arg]" ]]; then
              err "Unrecognized flag: $arg"
              return 1
            fi
@@ -394,10 +406,10 @@ parse_args() {
            ;;
 
       # Positional argument 
-      *) if (( "$rargc" < "$argc" )); then
+      *) if (( rargc < argc )); then
           name=${args[$rargc]};
           eval "$name=${arg@Q}"
-          rargc=$(( $rargc + 1 ))
+          rargc=$(( rargc + 1 ))
          else
           echo "$(r Usage): $_fname ${arg_strings[*]}" >&2
           echo "--> Error token: $arg" >&2
@@ -407,14 +419,13 @@ parse_args() {
     shift
   done
 
-  # If we still have required arguments, complain
-  for arg in "${args[@]}"; do
-    if [[ -z "${!arg}" ]]; then
-      echo "$(r Usage): $_fname ${arg_strings[*]}" >&2
-      echo "--> Unset variable: $arg"
-      return 1
-    fi
-  done
+  # If we still have required arguments, complain.
+  # This count-based check allows explicit empty-string positional args.
+  if (( rargc < argc )); then
+    echo "$(r Usage): $_fname ${arg_strings[*]}" >&2
+    echo "--> Unset variable: ${args[$rargc]}" >&2
+    return 1
+  fi
 
   # Export options to environment variables
   for option_key in "${!options[@]}"; do
@@ -425,5 +436,3 @@ parse_args() {
   # Set environment options back
   set "$env_options"
 }
-
-
