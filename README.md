@@ -46,7 +46,7 @@ What the generator asks for:
 The generated script includes:
 - Header comments (description, arguments, exit codes)
 - `config/utils.sh` and `config/config.sh` imports
-- Strict mode (`set -euo pipefail`)
+- [Strict mode](http://redsymbol.net/articles/unofficial-bash-strict-mode/) (`set -euo pipefail`)
 - Argument parsing scaffold (non-sbatch mode)
 
 ## Argument Parsing (`parse_args`)
@@ -64,6 +64,15 @@ Behavior:
 - Keyword args default to `EMPTY` unless already defined in environment.
 - `-h`/`--help` prints the script header comment as usage text.
 - Hyphens in option names are converted to underscores.
+
+You can use this inside functions as well!
+```bash
+f() {
+  local arg1
+  parse_args "arg1" "$@"
+  msg "Arg1: $arg1"
+}
+```
 
 ## Error Reporting Utilities
 Key helpers in `config/utils.sh`:
